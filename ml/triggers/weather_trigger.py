@@ -1,7 +1,7 @@
 import requests
 from datetime import datetime
 
-API_KEY = "667a1224cceb571a8da44a71d9c9320b"
+API_KEY = "YOUR-API-KEY"
 
 def get_current_season():
     month = datetime.now().month
