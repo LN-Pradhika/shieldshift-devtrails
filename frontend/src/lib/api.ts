@@ -1,7 +1,6 @@
-
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
-// ─── Token helpers ───────────────────────────────────────────────
-export const getAccessToken = () => localStorage.getItem("accessToken");
+
+export const getAccessToken  = () => localStorage.getItem("accessToken");
 export const getRefreshToken = () => localStorage.getItem("refreshToken");
 
 export const setTokens = (accessToken: string, refreshToken: string) => {
@@ -14,7 +13,6 @@ export const clearTokens = () => {
   localStorage.removeItem("refreshToken");
 };
 
-// ─── Core fetch wrapper ──────────────────────────────────────────
 let isRefreshing = false;
 let refreshQueue: Array<(token: string) => void> = [];
 
@@ -75,7 +73,27 @@ export const apiFetch = async (
   return res;
 };
 
-// ─── Auth API ────────────────────────────────────────────────────
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res  = await apiFetch(path, options);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message ?? `Request failed (${res.status})`);
+  return data as T;
+}
+
+export const api = {
+  get: <T>(path: string, opts?: RequestInit) =>
+    request<T>(path, { method: "GET", ...opts }),
+
+  post: <T>(path: string, body?: unknown, opts?: RequestInit) =>
+    request<T>(path, { method: "POST", body: JSON.stringify(body), ...opts }),
+
+  patch: <T>(path: string, body?: unknown, opts?: RequestInit) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(body), ...opts }),
+
+  delete: <T>(path: string, opts?: RequestInit) =>
+    request<T>(path, { method: "DELETE", ...opts }),
+};
+
 export const authAPI = {
   register: async (payload: {
     full_name: string;

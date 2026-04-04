@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 
+
 const extractToken = (req) => {
   const authHeader = req.headers["authorization"];
   if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -7,6 +8,7 @@ const extractToken = (req) => {
   }
   return null;
 };
+
 
 const verifyToken = (req, res, next) => {
   const token = extractToken(req);
@@ -17,7 +19,7 @@ const verifyToken = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; 
+    req.user = decoded;
     next();
   } catch (err) {
     if (err.name === "TokenExpiredError") {
@@ -26,7 +28,6 @@ const verifyToken = (req, res, next) => {
     return res.status(403).json({ success: false, message: "Invalid access token." });
   }
 };
-
 
 const optionalAuth = (req, res, next) => {
   const token = extractToken(req);

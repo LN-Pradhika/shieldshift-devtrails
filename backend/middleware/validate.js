@@ -1,4 +1,3 @@
-
 const PHONE_RE = /^\+?[0-9]{7,15}$/;
 
 const validateRegister = (req, res, next) => {
