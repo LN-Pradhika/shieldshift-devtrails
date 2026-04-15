@@ -93,7 +93,11 @@ const register = async (req, res, next) => {
 const login = async (req, res, next) => {
   try {
     const { phone, password } = req.body;
-    const normalizedPhone = phone.replace(/\s/g, "");
+    const normalizedPhone = typeof phone === "string" ? phone.replace(/\s/g, "") : "";
+
+    if (!normalizedPhone) {
+      return res.status(400).json({ success: false, message: "A valid phone number is required." });
+    }
 
     const { rows } = await pool.query("SELECT * FROM users WHERE phone = $1", [normalizedPhone]);
     const user = rows[0];
