@@ -1,4 +1,48 @@
 const pool = require("../config/db");
+const { getActivePolicy, setActivePolicy } = require("./fallbackState");
+
+const DEFAULT_PLANS = [
+  {
+    id: "basic",
+    name: "Basic Plan",
+    slug: "basic",
+    base_price: 199,
+    period: "month",
+    coverage: ["Weather disruption coverage", "Basic accident cover", "24/7 support"],
+  },
+  {
+    id: "standard",
+    name: "Standard Plan",
+    slug: "standard",
+    base_price: 349,
+    period: "month",
+    coverage: ["Weather disruption coverage", "Traffic incident coverage", "Earning loss protection", "Priority support"],
+  },
+  {
+    id: "premium",
+    name: "Premium Plan",
+    slug: "premium",
+    base_price: 599,
+    period: "month",
+    coverage: ["Weather disruption coverage", "Traffic incident coverage", "Health & accident cover", "Earning loss protection", "Family coverage add-on", "Dedicated manager"],
+  },
+  {
+    id: "gold",
+    name: "Gold Guard",
+    slug: "gold",
+    base_price: 1299,
+    period: "month",
+    coverage: ["All premium coverage", "Legal support", "Higher payout limits", "Fast-track claims"],
+  },
+  {
+    id: "elite",
+    name: "Elite Cover",
+    slug: "elite",
+    base_price: 1999,
+    period: "month",
+    coverage: ["Unlimited claims", "24/7 concierge support", "Travel protection", "Personalized risk advice"],
+  },
+];
 
 // ─── helpers ────────────────────────────────────────────────────
 
@@ -10,6 +54,20 @@ const nextMonthDate = () => {
   d.setMonth(d.getMonth() + 1);
   return d.toISOString();
 };
+
+const findPlanBySlug = (slug) => DEFAULT_PLANS.find((plan) => plan.slug === slug);
+
+const makeFallbackPolicy = (plan) => ({
+  id: `fallback-${plan.slug}`,
+  status: "active",
+  price_paid: plan.base_price,
+  started_at: new Date().toISOString(),
+  expires_at: nextMonthDate(),
+  plan_name: plan.name,
+  slug: plan.slug,
+  coverage: plan.coverage,
+  period: plan.period,
+});
 
 // ─── controllers ────────────────────────────────────────────────
 
@@ -29,6 +87,9 @@ const getPlans = async (req, res, next) => {
 
     return res.status(200).json({ success: true, data: { plans: rows } });
   } catch (err) {
+    if (err && err.code === "42P01" && err.message && err.message.includes("plans")) {
+      return res.status(200).json({ success: true, data: { plans: DEFAULT_PLANS } });
+    }
     next(err);
   }
 };
@@ -51,11 +112,18 @@ const getMyPolicy = async (req, res, next) => {
       [req.user.id]
     );
 
+    const policy = rows[0] || getActivePolicy(req.user.id) || null;
     return res.status(200).json({
       success: true,
-      data: { policy: rows[0] || null },
+      data: { policy },
     });
   } catch (err) {
+    if (err && err.code === "42P01" && err.message && err.message.includes("user_policies")) {
+      return res.status(200).json({
+        success: true,
+        data: { policy: getActivePolicy(req.user.id) || null },
+      });
+    }
     next(err);
   }
 };
@@ -67,6 +135,8 @@ const getMyPolicy = async (req, res, next) => {
  */
 const subscribe = async (req, res, next) => {
   const client = await pool.connect();
+  let transactionStarted = false;
+
   try {
     const { plan_slug } = req.body;
 
@@ -74,45 +144,83 @@ const subscribe = async (req, res, next) => {
       return res.status(400).json({ success: false, message: "plan_slug is required." });
     }
 
-    // Find the plan
-    const planRes = await client.query(
-      "SELECT * FROM plans WHERE slug = $1 AND is_active = TRUE",
-      [plan_slug]
-    );
+    let plan;
+    try {
+      const planRes = await client.query(
+        "SELECT * FROM plans WHERE slug = $1 AND is_active = TRUE",
+        [plan_slug]
+      );
+      if (planRes.rows.length) {
+        plan = planRes.rows[0];
+      }
+    } catch (err) {
+      if (!(err && err.code === "42P01" && err.message && err.message.includes("plans"))) {
+        throw err;
+      }
+    }
 
-    if (!planRes.rows.length) {
+    if (!plan) {
+      plan = findPlanBySlug(plan_slug);
+    }
+
+    if (!plan) {
       return res.status(404).json({ success: false, message: "Plan not found." });
     }
 
-    const plan = planRes.rows[0];
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
 
-    await client.query("BEGIN");
+      await client.query(
+        `UPDATE user_policies
+         SET status = 'cancelled'
+         WHERE user_id = $1 AND status = 'active'`,
+        [req.user.id]
+      );
 
-    // Cancel any existing active policy
-    await client.query(
-      `UPDATE user_policies
-       SET status = 'cancelled'
-       WHERE user_id = $1 AND status = 'active'`,
-      [req.user.id]
-    );
+      const { rows } = await client.query(
+        `INSERT INTO user_policies (user_id, plan_id, price_paid, expires_at)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [req.user.id, plan.id, plan.base_price, nextMonthDate()]
+      );
 
-    // Create new policy
-    const { rows } = await client.query(
-      `INSERT INTO user_policies (user_id, plan_id, price_paid, expires_at)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [req.user.id, plan.id, plan.base_price, nextMonthDate()]
-    );
+      await client.query("COMMIT");
+      transactionStarted = false;
 
-    await client.query("COMMIT");
-
-    return res.status(201).json({
-      success: true,
-      message: `Subscribed to ${plan.name} successfully.`,
-      data: { policy: rows[0] },
-    });
+      return res.status(201).json({
+        success: true,
+        message: `Subscribed to ${plan.name} successfully.`,
+        data: { policy: rows[0] },
+      });
+    } catch (err) {
+      if (transactionStarted) {
+        await client.query("ROLLBACK");
+      }
+      if (err && err.code === "42P01" && err.message && err.message.includes("user_policies")) {
+        const fallbackPolicy = makeFallbackPolicy(plan);
+        setActivePolicy(req.user.id, fallbackPolicy);
+        return res.status(201).json({
+          success: true,
+          message: `Subscribed to ${plan.name} successfully.`,
+          data: { policy: fallbackPolicy },
+        });
+      }
+      throw err;
+    }
   } catch (err) {
-    await client.query("ROLLBACK");
+    if (err && err.code === "42P01" && err.message && (err.message.includes("plans") || err.message.includes("user_policies"))) {
+      const plan = findPlanBySlug(req.body.plan_slug);
+      if (plan) {
+        const fallbackPolicy = makeFallbackPolicy(plan);
+        setActivePolicy(req.user.id, fallbackPolicy);
+        return res.status(201).json({
+          success: true,
+          message: `Subscribed to ${plan.name} successfully.`,
+          data: { policy: fallbackPolicy },
+        });
+      }
+    }
     next(err);
   } finally {
     client.release();

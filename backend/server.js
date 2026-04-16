@@ -15,13 +15,29 @@ const { notFound, errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
+const defaultOrigins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"];
 const allowedOrigins = process.env.CLIENT_ORIGIN
-  ? process.env.CLIENT_ORIGIN.split(",").map((origin) => origin.trim())
-  : ["http://localhost:5173"];
+  ? Array.from(
+      new Set([
+        ...process.env.CLIENT_ORIGIN.split(",").map((origin) => origin.trim()),
+        ...defaultOrigins,
+      ])
+    )
+  : defaultOrigins;
+
+const isLocalDevOrigin = (origin) =>
+  typeof origin === "string" &&
+  (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://[::1]:"));
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || isLocalDevOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS policy does not allow access from ${origin}`));
+      }
+    },
     credentials: true,
   })
 );
